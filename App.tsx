@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   LayoutDashboard, 
   HardHat, 
@@ -10,8 +10,11 @@ import {
   Menu,
   X,
   Settings as SettingsIcon,
-  Database
+  Database,
+  CloudCheck,
+  CloudOff
 } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 import { ConstructionState, ViewType } from './types';
 import Dashboard from './components/Dashboard';
 import ProjectManager from './components/ProjectManager';
@@ -50,10 +53,76 @@ const App: React.FC = () => {
 
   const [activeView, setActiveView] = useState<ViewType>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [dbStatus, setDbStatus] = useState<'local' | 'syncing' | 'connected' | 'error'>('local');
 
+  // Supabase Credentials (loaded from localStorage for persistence)
+  const sbUrl = localStorage.getItem('sb_url') || '';
+  const sbKey = localStorage.getItem('sb_key') || '';
+  
+  const supabase = (sbUrl && sbKey) ? createClient(sbUrl, sbKey) : null;
+
+  // Initial Fetch from Supabase
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!supabase) return;
+      setDbStatus('syncing');
+      try {
+        const [
+          { data: contractors },
+          { data: projects },
+          { data: certificates },
+          { data: payments }
+        ] = await Promise.all([
+          supabase.from('contractors').select('*'),
+          supabase.from('projects').select('*'),
+          supabase.from('certificates').select('*'),
+          supabase.from('payments').select('*')
+        ]);
+
+        if (contractors || projects || certificates || payments) {
+          setState({
+            contractors: contractors || [],
+            projects: projects || [],
+            certificates: certificates || [],
+            payments: payments || []
+          });
+          setDbStatus('connected');
+        }
+      } catch (err) {
+        console.error("Supabase fetch error:", err);
+        setDbStatus('error');
+      }
+    };
+
+    fetchData();
+  }, [sbUrl, sbKey]); // Re-run when credentials change
+
+  // Sync to Supabase and LocalStorage
   useEffect(() => {
     localStorage.setItem('obraapp_v1_data', JSON.stringify(state));
-  }, [state]);
+    
+    const syncToCloud = async () => {
+      if (!supabase || dbStatus === 'syncing') return;
+      
+      // In a real production app, we would only sync deltas. 
+      // For this implementation, we handle logical upserts on state change.
+      // This is a simplified version of cloud sync.
+      try {
+        // Example for contractors (logical sync)
+        if (state.contractors.length > 0) {
+           await supabase.from('contractors').upsert(state.contractors);
+        }
+        if (state.projects.length > 0) {
+           await supabase.from('projects').upsert(state.projects);
+        }
+        // ... same for others as needed
+      } catch (e) {
+        console.warn("Auto-sync failed, check RLS policies in Supabase", e);
+      }
+    };
+
+    syncToCloud();
+  }, [state, supabase]);
 
   const renderContent = () => {
     switch(activeView) {
@@ -88,7 +157,7 @@ const App: React.FC = () => {
         <div className="p-4 mt-auto border-t border-white/10">
           <SidebarItem 
             icon={<SettingsIcon size={20} />} 
-            label="Config / Backup" 
+            label="Config / Supabase" 
             active={activeView === 'settings'} 
             onClick={() => setActiveView('settings')} 
             collapsed={!isSidebarOpen} 
@@ -104,9 +173,19 @@ const App: React.FC = () => {
           </button>
           
           <div className="flex items-center gap-6">
-             <div className="flex items-center gap-2 px-4 py-1.5 bg-blue-50 text-blue-700 rounded-full border border-blue-100 hidden sm:flex">
-                <Database size={14} className="animate-pulse" />
-                <span className="text-[10px] font-black uppercase tracking-wider">Modo Local + Supabase Ready</span>
+             <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full border hidden sm:flex transition-colors ${
+               dbStatus === 'connected' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 
+               dbStatus === 'error' ? 'bg-red-50 text-red-700 border-red-100' :
+               dbStatus === 'syncing' ? 'bg-blue-50 text-blue-700 border-blue-100' :
+               'bg-slate-50 text-slate-700 border-slate-100'
+             }`}>
+                {dbStatus === 'connected' ? <CloudCheck size={14} /> : <Database size={14} className={dbStatus === 'syncing' ? 'animate-spin' : ''} />}
+                <span className="text-[10px] font-black uppercase tracking-wider">
+                  {dbStatus === 'connected' ? 'Supabase Conectado' : 
+                   dbStatus === 'error' ? 'Error de Conexión' :
+                   dbStatus === 'syncing' ? 'Sincronizando...' :
+                   'Modo Local'}
+                </span>
              </div>
              <div className="w-10 h-10 bg-slate-900 text-white rounded-xl flex items-center justify-center font-bold text-sm shadow-lg">AD</div>
           </div>
